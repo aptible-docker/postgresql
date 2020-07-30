@@ -77,12 +77,30 @@ function pg_init_conf () {
   pg_init_ssl
 }
 
-
 function pg_init_data () {
   chown -R postgres:postgres "$DATA_DIRECTORY"
   chmod go-rwx "$DATA_DIRECTORY"
 }
 
+function pg_init_archive () {
+  chown -R postgres:postgres "$ARCHIVE_DIRECTORY"
+  chmod go-rwx "$ARCHIVE_DIRECTORY"
+}
+
+function pg_init_pagerduty_notify () {
+  cat /usr/bin/pagerduty-notify.template \
+    | sed "s:__PAGERDUTY_INCIDENT_KEY__:${PAGERDUTY_INCIDENT_KEY}:g" \
+    | sed "s:__PAGERDUTY_IDENTIFIER__:${PAGERDUTY_IDENTIFIER}:g" \
+    | sed "s:__PAGERDUTY_WARNING_KEY__:${PAGERDUTY_WARNING_KEY}:g" \
+    > /usr/bin/pagerduty-notify.sh
+
+  chown root:root /usr/bin/pagerduty-notify.sh
+  chmod 700 /usr/bin/pagerduty-notify.sh
+
+  unset PAGERDUTY_INCIDENT_KEY
+  unset PAGERDUTY_IDENTIFIER
+  unset PAGERDUTY_WARNING_KEY
+}
 
 function pg_run_server () {
   # Run pg! Remove potentially sensitive ENV and passthrough options.
@@ -98,6 +116,7 @@ function pg_run_server () {
 function initialize() {
   pg_init_conf
   pg_init_data
+  pg_init_archive
 
   gosu postgres "/usr/lib/postgresql/$PG_VERSION/bin/initdb" -D "$DATA_DIRECTORY"
   gosu postgres /etc/init.d/postgresql start
@@ -110,6 +129,10 @@ function initialize() {
 
 if [[ "$1" == "--initialize" ]]; then
   initialize
+
+  if dpkg --compare-versions "$PG_VERSION" ge '9.4'; then
+    echo "archive_mode = 'on'" >> "${DATA_DIRECTORY}/postgresql.auto.conf"
+  fi
 
 elif [[ "$1" == "--initialize-from" ]]; then
   [ -z "$2" ] && echo "docker run -it aptible/postgresql --initialize-from postgresql://..." && exit 1
@@ -124,6 +147,7 @@ elif [[ "$1" == "--initialize-from" ]]; then
 
   pg_init_conf
   pg_init_data
+  pg_init_archive
 
   # TODO: We force ssl=true here, but it's not entirely correct to do so. Perhaps Sweetness should be providing this.
   # TODO: Either way, we should respect whatever came in via the original URL..!
@@ -236,6 +260,8 @@ elif [[ "$1" == "--restore" ]]; then
 
 elif [[ "$1" == "--readonly" ]]; then
   pg_init_conf
+  pg_init_pagerduty_notify
+  pg_init_archive
   pg_run_server --default_transaction_read_only=on
 
 else
@@ -244,6 +270,8 @@ else
   echo "--------------End persistent configuration changes----------------"
 
   pg_init_conf
+  pg_init_pagerduty_notify
+  pg_init_archive
   pg_run_server
 
 fi
